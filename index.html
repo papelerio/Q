@@ -1,0 +1,417 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Editor 3D — Exportador OBJ (corregido)</title>
+  <style>
+    :root{--bg:#0f1724;--panel:#0b1220;--accent:#10b981;--muted:#94a3b8;}
+    html,body{height:100%;margin:0;font-family:Inter,Segoe UI,Arial;background:var(--bg);color:#e6eef8}
+    #app{display:grid;grid-template-columns:320px 1fr;gap:12px;height:100vh;padding:12px;box-sizing:border-box}
+    .panel{background:linear-gradient(180deg, rgba(255,255,255,0.02), transparent);border-radius:12px;padding:12px;box-shadow:0 6px 18px rgba(2,6,23,0.6)}
+    header{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+    header h1{font-size:16px;margin:0}
+    .tools{display:flex;flex-direction:column;gap:8px}
+    .row{display:flex;gap:8px}
+    button,select,input[type=color]{background:transparent;border:1px solid rgba(255,255,255,0.06);color:inherit;padding:8px;border-radius:8px;cursor:pointer}
+    button:hover{border-color:var(--accent)}
+    #canvas-holder{position:relative;border-radius:12px;overflow:hidden}
+    canvas{display:block;width:100%;height:100%}
+    .footer{font-size:12px;color:var(--muted);margin-top:8px}
+    label{font-size:13px;color:var(--muted)}
+    .small{font-size:13px}
+    .toolbar-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+    .top-controls{display:flex;gap:8px;margin-bottom:8px}
+    .scene-stats{font-size:13px;color:var(--muted);margin-top:6px}
+    .notification{position:fixed;top:20px;right:20px;background:var(--accent);color:white;padding:12px 16px;border-radius:8px;z-index:1000;opacity:0;transform:translateY(-10px);transition:all 0.3s ease;}
+    .notification.show{opacity:1;transform:translateY(0);}
+  </style>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.153.0/build/three.module.js"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="app">
+    <div class="panel" style="min-height:0;display:flex;flex-direction:column">
+      <header>
+        <h1>Editor 3D — Exportar .OBJ</h1>
+      </header>
+
+      <div class="tools">
+        <div class="row toolbar-grid">
+          <button id="add-cube">Añadir Cubo</button>
+          <button id="add-sphere">Añadir Esfera</button>
+          <button id="add-cylinder">Añadir Cilindro</button>
+          <button id="add-plane">Añadir Plano</button>
+        </div>
+
+        <div class="row">
+          <select id="mode">
+            <option value="translate">Trasladar</option>
+            <option value="rotate">Rotar</option>
+            <option value="scale">Escalar</option>
+          </select>
+          <select id="space">
+            <option value="world">Mundo</option>
+            <option value="local">Local</option>
+          </select>
+        </div>
+
+        <div class="row">
+          <button id="snap">Toggle Snap</button>
+          <button id="delete">Eliminar seleccionado</button>
+          <button id="duplicate">Duplicar</button>
+        </div>
+
+        <div class="row">
+          <label class="small">Color</label>
+          <input type="color" id="color" value="#ffcc66" />
+        </div>
+
+        <div class="row">
+          <button id="export-obj">Exportar .OBJ</button>
+          <button id="reset-camera">Reset Cámara</button>
+        </div>
+
+        <div class="row">
+          <label class="small">Grid</label>
+          <select id="grid-size"><option>1</option><option>2</option><option>5</option><option>10</option></select>
+          <button id="toggle-grid">Mostrar/Ocultar</button>
+        </div>
+
+        <div class="row">
+          <button id="autotest">Run Autotest</button>
+        </div>
+
+        <div class="footer">
+          <div class="scene-stats">Objetos: <span id="obj-count">0</span> • Triángulos: <span id="tri-count">0</span></div>
+          <div style="margin-top:6px">Instrucciones: Clic para seleccionar. Usa las herramientas para transformar. Exporta cuando termines.</div>
+        </div>
+      </div>
+    </div>
+
+    <div id="canvas-holder" class="panel">
+      <div id="renderer-root" style="width:100%;height:100%"></div>
+    </div>
+  </div>
+
+  <div id="notification" class="notification"></div>
+
+  <script type="module">
+    // Import THREE via the import map (see <script type="importmap"> above)
+    import * as THREE from 'three';
+    // Import example modules using full URLs. They will internally import 'three' and resolve via importmap.
+    import { OrbitControls } from 'https://unpkg.com/three@0.153.0/examples/jsm/controls/OrbitControls.js';
+    import { TransformControls } from 'https://unpkg.com/three@0.153.0/examples/jsm/controls/TransformControls.js';
+    import { OBJExporter } from 'https://unpkg.com/three@0.153.0/examples/jsm/exporters/OBJExporter.js';
+
+    // Basic app setup
+    const container = document.getElementById('renderer-root');
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x071025);
+
+    const camera = new THREE.PerspectiveCamera(60, container.clientWidth / container.clientHeight, 0.1, 2000);
+    camera.position.set(4, 4, 8);
+
+    const renderer = new THREE.WebGLRenderer({antialias:true});
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setSize(container.clientWidth, container.clientHeight);
+    container.appendChild(renderer.domElement);
+
+    // Lights
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 0.7);
+    hemi.position.set(0, 50, 0);
+    scene.add(hemi);
+    const dir = new THREE.DirectionalLight(0xffffff, 0.8);
+    dir.position.set(3, 10, 4);
+    scene.add(dir);
+
+    // Grid and helpers
+    let grid = new THREE.GridHelper(20, 20, 0x2c3e50, 0x14202a);
+    scene.add(grid);
+
+    const orbit = new OrbitControls(camera, renderer.domElement);
+    orbit.enableDamping = true;
+
+    // Transform controls
+    const transform = new TransformControls(camera, renderer.domElement);
+    transform.addEventListener('dragging-changed', function(event){ orbit.enabled = !event.value; });
+    scene.add(transform);
+
+    // Selection & raycasting
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+    let selected = null;
+
+    const objects = [];
+    let idCounter = 1;
+
+    // Función para mostrar notificaciones
+    function showNotification(message, duration = 3000) {
+      const notification = document.getElementById('notification');
+      notification.textContent = message;
+      notification.classList.add('show');
+      
+      setTimeout(() => {
+        notification.classList.remove('show');
+      }, duration);
+    }
+
+    function addMaterial(color){
+      return new THREE.MeshStandardMaterial({color, metalness:0.1, roughness:0.6});
+    }
+
+    function addPrimitive(type){
+      let geom;
+      switch(type){
+        case 'cube': geom = new THREE.BoxGeometry(1,1,1); break;
+        case 'sphere': geom = new THREE.SphereGeometry(0.6, 32, 24); break;
+        case 'cylinder': geom = new THREE.CylinderGeometry(0.5,0.5,1,32); break;
+        case 'plane': geom = new THREE.PlaneGeometry(2,2); break;
+        default: geom = new THREE.BoxGeometry(1,1,1);
+      }
+      const color = document.getElementById('color').value;
+      const mesh = new THREE.Mesh(geom, addMaterial(color));
+      mesh.name = `${type}_${idCounter++}`;
+      mesh.position.set((Math.random()-0.5)*2, 1, (Math.random()-0.5)*2);
+      scene.add(mesh);
+      objects.push(mesh);
+      updateStats();
+      selectObject(mesh);
+      return mesh;
+    }
+
+    function updateStats(){
+      document.getElementById('obj-count').innerText = objects.length;
+      let tris = 0;
+      objects.forEach(o=>{
+        if(o.geometry){
+          const posCount = o.geometry.attributes.position ? o.geometry.attributes.position.count : 0;
+          tris += o.geometry.index ? o.geometry.index.count/3 : posCount/3;
+        }
+      });
+      document.getElementById('tri-count').innerText = Math.round(tris);
+    }
+
+    function selectObject(obj){
+      if(selected === obj) return;
+      if(selected){
+        if(selected.material && selected.material.emissive) selected.material.emissive.setHex(0x000000);
+        transform.detach();
+      }
+      selected = obj;
+      if(selected){
+        if(selected.material && selected.material.emissive) selected.material.emissive.setHex(0x113355);
+        transform.attach(selected);
+      }
+    }
+
+    // Mouse events
+    function onClick(e){
+      const rect = renderer.domElement.getBoundingClientRect();
+      mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse.y = - ((e.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(mouse, camera);
+      const intersects = raycaster.intersectObjects(objects, false);
+      if(intersects.length>0){
+        selectObject(intersects[0].object);
+      } else {
+        selectObject(null);
+      }
+    }
+
+    renderer.domElement.addEventListener('pointerdown', onClick);
+
+    // UI bindings
+    document.getElementById('add-cube').addEventListener('click', ()=>addPrimitive('cube'));
+    document.getElementById('add-sphere').addEventListener('click', ()=>addPrimitive('sphere'));
+    document.getElementById('add-cylinder').addEventListener('click', ()=>addPrimitive('cylinder'));
+    document.getElementById('add-plane').addEventListener('click', ()=>addPrimitive('plane'));
+
+    document.getElementById('mode').addEventListener('change', (e)=>{
+      transform.setMode(e.target.value);
+    });
+    document.getElementById('space').addEventListener('change', (e)=>{
+      transform.setSpace(e.target.value);
+    });
+
+    document.getElementById('delete').addEventListener('click', ()=>{
+      if(!selected) return;
+      scene.remove(selected);
+      const idx = objects.indexOf(selected);
+      if(idx>=0) objects.splice(idx,1);
+      transform.detach();
+      selected=null;
+      updateStats();
+      showNotification('Objeto eliminado');
+    });
+
+    document.getElementById('duplicate').addEventListener('click', ()=>{
+      if(!selected) return;
+      const clone = selected.clone();
+      // ensure geometry is cloned (three shares geometry by default)
+      clone.geometry = selected.geometry.clone();
+      clone.material = selected.material.clone();
+      clone.position.x += 0.5;
+      scene.add(clone);
+      objects.push(clone);
+      selectObject(clone);
+      updateStats();
+      showNotification('Objeto duplicado');
+    });
+
+    let snapEnabled = false;
+    document.getElementById('snap').addEventListener('click', ()=>{
+      snapEnabled = !snapEnabled;
+      // use 0 to disable snap (safe alternative to null)
+      transform.setTranslationSnap(snapEnabled ? 0.5 : 0);
+      transform.setRotationSnap(snapEnabled ? THREE.MathUtils.degToRad(15) : 0);
+      showNotification('Snap ' + (snapEnabled ? 'activado' : 'desactivado'));
+    });
+
+    // CORRECCIÓN: Función de exportación OBJ corregida
+    document.getElementById('export-obj').addEventListener('click', ()=>{
+      try{
+        if (objects.length === 0) {
+          showNotification('No hay objetos para exportar');
+          return;
+        }
+        
+        const exporter = new OBJExporter();
+        
+        // Crear una escena temporal para exportación
+        const exportScene = new THREE.Scene();
+        
+        // Clonar solo los objetos de la escena principal (excluyendo luces, controles, etc.)
+        objects.forEach(obj => {
+          if (obj.isMesh) {
+            const clone = obj.clone();
+            
+            // Asegurar que el material tenga nombre para la exportación
+            if (clone.material && !clone.material.name) {
+              clone.material.name = `material_${obj.name}`;
+            }
+            
+            exportScene.add(clone);
+          }
+        });
+        
+        const result = exporter.parse(exportScene);
+        
+        if (!result || result.trim().length === 0) {
+          throw new Error('El archivo OBJ está vacío');
+        }
+        
+        const blob = new Blob([result], {type: 'text/plain;charset=utf-8'});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        
+        const name = prompt('Nombre del archivo (sin extensión)', 'scene') || 'scene';
+        a.download = name + '.obj';
+        
+        // Añadir temporalmente al DOM para asegurar la descarga en algunos navegadores
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        
+        // CORRECCIÓN: Esperar antes de revocar la URL para permitir la descarga
+        setTimeout(() => {
+          URL.revokeObjectURL(url);
+        }, 5000); // 5 segundos para mayor seguridad
+        
+        showNotification(`Archivo ${name}.obj descargado correctamente`);
+        
+      }catch(err){
+        console.error('Error exporting OBJ:', err);
+        showNotification('Error al exportar OBJ: ' + err.message, 5000);
+      }
+    });
+
+    document.getElementById('reset-camera').addEventListener('click', ()=>{
+      camera.position.set(4,4,8); 
+      orbit.target.set(0,0,0);
+      orbit.update();
+      showNotification('Cámara reiniciada');
+    });
+
+    document.getElementById('toggle-grid').addEventListener('click', ()=>{ 
+      grid.visible = !grid.visible; 
+      showNotification('Grid ' + (grid.visible ? 'mostrado' : 'oculto'));
+    });
+    
+    document.getElementById('grid-size').addEventListener('change', (e)=>{
+      const s = parseFloat(e.target.value) || 1;
+      scene.remove(grid);
+      grid = new THREE.GridHelper(20*s, 20*s, 0x2c3e50, 0x14202a);
+      scene.add(grid);
+    });
+
+    // color change
+    document.getElementById('color').addEventListener('input', (e)=>{
+      if(selected && selected.material && selected.material.color){
+        selected.material.color.set(e.target.value);
+      }
+    });
+
+    // Autotest: a simple runtime test to validate basic editor flows (adds objects, duplicates, exports string)
+    async function runAutotest(){
+      try{
+        const before = objects.length;
+        const c = addPrimitive('cube');
+        const s = addPrimitive('sphere');
+        // duplicate cube
+        selectObject(c);
+        const dupBtn = document.getElementById('duplicate');
+        dupBtn.click();
+        const after = objects.length;
+        const exporter = new OBJExporter();
+        const out = exporter.parse(scene);
+        const ok = after >= before + 3 && typeof out === 'string' && out.length > 20;
+        showNotification('Autotest ' + (ok ? 'PASÓ' : 'FALLÓ') + ` — objetos: ${before}→${after}, export length: ${out.length}`);
+        console.log({before, after, exportLength: out.length, exportSample: out.slice(0,200)});
+      }catch(e){
+        console.error('Autotest error', e);
+        showNotification('Autotest falló — revisa la consola.', 5000);
+      }
+    }
+    document.getElementById('autotest').addEventListener('click', runAutotest);
+
+    // responsiveness
+    window.addEventListener('resize', ()=>{
+      camera.aspect = container.clientWidth / container.clientHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(container.clientWidth, container.clientHeight);
+    });
+
+    // keyboard shortcuts
+    window.addEventListener('keydown', (e)=>{
+      if(e.key === 'Delete'){ if(selected){ document.getElementById('delete').click(); }}
+      if(e.ctrlKey && e.key.toLowerCase() === 'd'){ e.preventDefault(); document.getElementById('duplicate').click(); }
+      if(e.key === 'g'){ transform.setMode('translate'); document.getElementById('mode').value = 'translate'; }
+      if(e.key === 'r'){ transform.setMode('rotate'); document.getElementById('mode').value = 'rotate'; }
+      if(e.key === 's'){ transform.setMode('scale'); document.getElementById('mode').value = 'scale'; }
+    });
+
+    // animation loop
+    function animate(){
+      requestAnimationFrame(animate);
+      orbit.update();
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    // initial sample object
+    addPrimitive('cube');
+    addPrimitive('sphere');
+    updateStats();
+
+    // Tips: To extend this program: implement UVs & materials export, import OBJ parsing, save presets, vertex editing tools.
+  </script>
+</body>
+</html>

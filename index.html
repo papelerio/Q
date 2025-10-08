@@ -123,9 +123,8 @@
   <div id="notification" class="notification"></div>
 
   <script type="module">
-    // Import THREE via the import map (see <script type="importmap"> above)
+    // Import THREE via the import map
     import * as THREE from 'three';
-    // Import example modules using full URLs. They will internally import 'three' and resolve via importmap.
     import { OrbitControls } from 'https://unpkg.com/three@0.153.0/examples/jsm/controls/OrbitControls.js';
     import { TransformControls } from 'https://unpkg.com/three@0.153.0/examples/jsm/controls/TransformControls.js';
     import { OBJExporter } from 'https://unpkg.com/three@0.153.0/examples/jsm/exporters/OBJExporter.js';
@@ -160,14 +159,91 @@
 
     // Transform controls
     const transform = new TransformControls(camera, renderer.domElement);
+    transform.visible = true;
+    let currentMode = 'translate';
+    let initialScale = new THREE.Vector3();
+    let initialPosition = new THREE.Vector3();
+
     transform.addEventListener('dragging-changed', function(event){ 
       orbit.enabled = !event.value; 
       if (!event.value && selected) {
-        // Cuando se termina de arrastrar, guardar en el historial
-        saveToHistory('transform');
+        saveToHistory(currentMode);
       }
     });
+
     scene.add(transform);
+
+    // Stretch handles
+    const handleGroup = new THREE.Group();
+    scene.add(handleGroup);
+    let handles = {};
+
+    function getHandleOffset(axis) {
+      return selected.scale[axis] / 2 + 0.2;
+    }
+
+    function createHandle(axis, dir) {
+      let color;
+      switch (axis) {
+        case 'x': color = 0xff4444; break;
+        case 'y': color = 0x44ff44; break;
+        case 'z': color = 0x4444ff; break;
+        default: color = 0xffff44;
+      }
+      const geo = new THREE.BoxGeometry(0.15, 0.15, 0.15);
+      const mat = new THREE.MeshBasicMaterial({ 
+        color, 
+        transparent: true, 
+        opacity: 0.8,
+        depthTest: false,
+        depthWrite: false
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.userData = { type: 'stretchHandle', axis, dir };
+      return mesh;
+    }
+
+    function createStretchHandles() {
+      if (!selected) return;
+      handleGroup.clear();
+      handles = {};
+      const center = selected.position.clone();
+      ['x', 'y', 'z'].forEach(ax => {
+        const offset = getHandleOffset(ax);
+        const axisLocal = new THREE.Vector3();
+        axisLocal[ax] = 1;
+        for (let sgn = 1; sgn >= -1; sgn -= 2) {
+          const hkey = sgn > 0 ? `p${ax}` : `n${ax}`;
+          handles[hkey] = createHandle(ax, sgn);
+          handleGroup.add(handles[hkey]);
+          const hDirLocal = axisLocal.clone().multiplyScalar(sgn);
+          const hDirWorld = hDirLocal.applyQuaternion(selected.quaternion);
+          hDirWorld.normalize();
+          const handlePos = center.clone().add(hDirWorld.clone().multiplyScalar(offset));
+          handles[hkey].position.copy(handlePos);
+        }
+      });
+    }
+
+    function updateHandlePositions(excludeActive = false) {
+      if (!selected) return;
+      const center = selected.position.clone();
+      ['x', 'y', 'z'].forEach(ax => {
+        const offset = getHandleOffset(ax);
+        const axisLocal = new THREE.Vector3();
+        axisLocal[ax] = 1;
+        for (let sgn = 1; sgn >= -1; sgn -= 2) {
+          const hkey = sgn > 0 ? `p${ax}` : `n${ax}`;
+          const h = handles[hkey];
+          if (excludeActive && activeHandle === h) continue;
+          const hDirLocal = axisLocal.clone().multiplyScalar(sgn);
+          const hDirWorld = hDirLocal.applyQuaternion(selected.quaternion);
+          hDirWorld.normalize();
+          const handlePos = center.clone().add(hDirWorld.clone().multiplyScalar(offset));
+          h.position.copy(handlePos);
+        }
+      });
+    }
 
     // SISTEMA DE HISTORIAL CORREGIDO
     const MAX_HISTORY = 20;
@@ -175,7 +251,6 @@
     let historyIndex = -1;
     let isRestoring = false;
 
-    // Función para serializar el estado completo de la escena
     function serializeScene() {
       const state = {
         objects: [],
@@ -200,13 +275,10 @@
       return state;
     }
 
-    // Función para restaurar el estado completo de la escena
     function restoreScene(state) {
-      // Limpiar escena actual
       objects.forEach(obj => scene.remove(obj));
       objects.length = 0;
       
-      // Recrear todos los objetos del estado
       state.objects.forEach(objData => {
         let geometry;
         switch(objData.type) {
@@ -235,7 +307,6 @@
         objects.push(mesh);
       });
       
-      // Actualizar selección
       if (selected) {
         const newSelected = objects.find(obj => obj.uuid === selected.uuid);
         selectObject(newSelected);
@@ -246,24 +317,20 @@
       updateStats();
     }
 
-    // Función para guardar el estado actual en el historial
     function saveToHistory(actionType = 'unknown') {
       if (isRestoring) return;
       
       console.log(`Guardando historial: ${actionType}, índice actual: ${historyIndex}`);
       
-      // Eliminar estados futuros si estamos en medio del historial
       if (historyIndex < history.length - 1) {
         history = history.slice(0, historyIndex + 1);
       }
       
-      // Guardar estado actual
       const state = serializeScene();
       state.actionType = actionType;
       
       history.push(state);
       
-      // Limitar el tamaño del historial
       if (history.length > MAX_HISTORY) {
         history.shift();
       }
@@ -272,7 +339,6 @@
       updateHistoryInfo();
     }
 
-    // Función para deshacer
     function undo() {
       if (historyIndex <= 0) {
         showNotification('No hay más acciones para deshacer');
@@ -289,7 +355,6 @@
       showNotification(`Deshecho: ${history[historyIndex].actionType} (${historyIndex + 1}/${history.length})`);
     }
 
-    // Función para rehacer
     function redo() {
       if (historyIndex >= history.length - 1) {
         showNotification('No hay más acciones para rehacer');
@@ -306,7 +371,6 @@
       showNotification(`Rehecho: ${history[historyIndex].actionType} (${historyIndex + 1}/${history.length})`);
     }
 
-    // Actualizar información del historial en la UI
     function updateHistoryInfo() {
       document.getElementById('history-count').textContent = history.length;
       document.getElementById('history-position').textContent = `${historyIndex + 1}/${history.length}`;
@@ -326,7 +390,15 @@
     const objects = [];
     let idCounter = 1;
 
-    // Función para mostrar notificaciones
+    // Stretch drag variables
+    let activeHandle = null;
+    let isDragging = false;
+    let dragStartMouse = new THREE.Vector2();
+    let initialHandlePos = new THREE.Vector3();
+    let currentAxisDirWorld = new THREE.Vector3();
+    let currentAxisScreenUnit = new THREE.Vector2();
+    let currentNDCperWorld = 0;
+
     function showNotification(message, duration = 3000) {
       const notification = document.getElementById('notification');
       notification.textContent = message;
@@ -364,7 +436,6 @@
       updateStats();
       selectObject(mesh);
       
-      // Guardar en historial después de añadir objeto
       saveToHistory(`add_${type}`);
       
       return mesh;
@@ -386,40 +457,133 @@
       if(selected === obj) return;
       if(selected){
         if(selected.material && selected.material.emissive) selected.material.emissive.setHex(0x000000);
-        transform.detach();
       }
       selected = obj;
       if(selected){
         if(selected.material && selected.material.emissive) selected.material.emissive.setHex(0x113355);
-        transform.attach(selected);
+      }
+      if(currentMode === 'stretch') {
+        if(selected) {
+          createStretchHandles();
+          initialScale.copy(selected.scale);
+          initialPosition.copy(selected.position);
+        } else {
+          handleGroup.clear();
+        }
+        transform.visible = false;
+        transform.detach();
+      } else {
+        handleGroup.clear();
+        transform.visible = true;
+        if(selected) {
+          transform.attach(selected);
+        } else {
+          transform.detach();
+        }
       }
     }
 
-    // Mouse events
-    function onClick(e){
+    function onPointerDown(e) {
       const rect = renderer.domElement.getBoundingClientRect();
       mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
       mouse.y = - ((e.clientY - rect.top) / rect.height) * 2 + 1;
       raycaster.setFromCamera(mouse, camera);
-      const intersects = raycaster.intersectObjects(objects, false);
-      if(intersects.length>0){
-        selectObject(intersects[0].object);
+      const handleIntersects = raycaster.intersectObjects(handleGroup.children, false);
+      const objIntersects = raycaster.intersectObjects(objects, false);
+      if (handleIntersects.length > 0 && currentMode === 'stretch' && selected) {
+        activeHandle = handleIntersects[0].object;
+        dragStartMouse.copy(mouse);
+        initialHandlePos.copy(activeHandle.position);
+        initialScale.copy(selected.scale);
+        initialPosition.copy(selected.position);
+        const { axis, dir } = activeHandle.userData;
+        const axisDirLocal = new THREE.Vector3();
+        axisDirLocal[axis] = dir;
+        currentAxisDirWorld.copy(axisDirLocal).applyQuaternion(selected.quaternion);
+        currentAxisDirWorld.normalize();
+        // Compute screen projection
+        const point1 = initialHandlePos.clone();
+        const point2 = point1.clone().add(currentAxisDirWorld.clone().multiplyScalar(0.1));
+        const screen1 = point1.clone().project(camera);
+        const screen2 = point2.clone().project(camera);
+        const axisScreenVec = new THREE.Vector2(screen2.x - screen1.x, screen2.y - screen1.y);
+        const axisScreenLength = axisScreenVec.length();
+        currentAxisScreenUnit.copy(axisScreenVec).normalize();
+        currentNDCperWorld = axisScreenLength / 0.1;
+        isDragging = true;
+        orbit.enabled = false;
+        e.preventDefault();
+        return;
+      } else if (objIntersects.length > 0) {
+        selectObject(objIntersects[0].object);
       } else {
         selectObject(null);
+        activeHandle = null;
       }
     }
 
-    renderer.domElement.addEventListener('pointerdown', onClick);
+    function onPointerMove(e) {
+      if (!isDragging || !activeHandle) return;
+      const rect = renderer.domElement.getBoundingClientRect();
+      mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse.y = - ((e.clientY - rect.top) / rect.height) * 2 + 1;
+      const dragDeltaScreen = new THREE.Vector2().subVectors(mouse, dragStartMouse);
+      const projectedNDC = dragDeltaScreen.dot(currentAxisScreenUnit);
+      let deltaAlongAxis = projectedNDC / currentNDCperWorld;
+      const axis = activeHandle.userData.axis;
+      const scaleDelta = Math.max(deltaAlongAxis, 0.01 - initialScale[axis]);
+      const newScale = initialScale[axis] + scaleDelta;
+      selected.scale[axis] = newScale;
+      const centerDelta = scaleDelta / 2;
+      const offsetWorld = currentAxisDirWorld.clone().multiplyScalar(centerDelta);
+      selected.position.copy(initialPosition).add(offsetWorld);
+      const handleDelta = scaleDelta;
+      const handleOffsetWorld = currentAxisDirWorld.clone().multiplyScalar(handleDelta);
+      activeHandle.position.copy(initialHandlePos).add(handleOffsetWorld);
+      updateHandlePositions(true);
+    }
 
-    // UI bindings
+    function onPointerUp(e) {
+      if (isDragging) {
+        isDragging = false;
+        orbit.enabled = true;
+        updateHandlePositions(false);
+        activeHandle = null;
+        saveToHistory('stretch');
+      }
+    }
+
+    renderer.domElement.addEventListener('pointerdown', onPointerDown);
+    renderer.domElement.addEventListener('pointermove', onPointerMove);
+    renderer.domElement.addEventListener('pointerup', onPointerUp);
+
     document.getElementById('add-cube').addEventListener('click', ()=>addPrimitive('cube'));
     document.getElementById('add-sphere').addEventListener('click', ()=>addPrimitive('sphere'));
     document.getElementById('add-cylinder').addEventListener('click', ()=>addPrimitive('cylinder'));
     document.getElementById('add-plane').addEventListener('click', ()=>addPrimitive('plane'));
 
     document.getElementById('mode').addEventListener('change', (e)=>{
-      transform.setMode(e.target.value === 'stretch' ? 'scale' : e.target.value);
-      updateToolButtons(e.target.value);
+      const newMode = e.target.value;
+      const wasStretch = currentMode === 'stretch';
+      currentMode = newMode;
+      if(newMode === 'stretch') {
+        transform.setMode('scale');
+        transform.visible = false;
+        if(selected) {
+          createStretchHandles();
+          initialScale.copy(selected.scale);
+          initialPosition.copy(selected.position);
+        }
+        showNotification('Modo Estirar: arrastra los manejadores para estirar en cualquier dirección');
+      } else {
+        transform.setMode(newMode);
+        transform.visible = true;
+        handleGroup.clear();
+        if(selected) {
+          transform.attach(selected);
+        }
+      }
+      updateToolButtons(newMode);
     });
 
     function updateToolButtons(mode) {
@@ -435,18 +599,21 @@
 
     document.getElementById('space').addEventListener('change', (e)=>{
       transform.setSpace(e.target.value);
+      if (currentMode === 'stretch' && selected) {
+        createStretchHandles();
+      }
     });
 
     document.getElementById('delete').addEventListener('click', ()=>{
       if(!selected) return;
       
-      // Guardar estado antes de eliminar
       saveToHistory('delete');
       
       scene.remove(selected);
       const idx = objects.indexOf(selected);
       if(idx>=0) objects.splice(idx,1);
       transform.detach();
+      handleGroup.clear();
       selected=null;
       updateStats();
       showNotification('Objeto eliminado');
@@ -455,7 +622,6 @@
     document.getElementById('duplicate').addEventListener('click', ()=>{
       if(!selected) return;
       
-      // Guardar estado antes de duplicar
       saveToHistory('duplicate');
       
       const clone = selected.clone();
@@ -478,7 +644,6 @@
       showNotification('Snap ' + (snapEnabled ? 'activado' : 'desactivado'));
     });
 
-    // Función de exportación OBJ
     document.getElementById('export-obj').addEventListener('click', ()=>{
       try{
         if (objects.length === 0) {
@@ -548,25 +713,36 @@
       scene.add(grid);
     });
 
-    // Botones de historial
     document.getElementById('undo').addEventListener('click', undo);
     document.getElementById('redo').addEventListener('click', redo);
 
-    // Event listeners para botones de herramientas
     document.querySelectorAll('.tool-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const mode = btn.getAttribute('data-mode');
-        transform.setMode(mode === 'stretch' ? 'scale' : mode);
+        const wasStretch = currentMode === 'stretch';
+        currentMode = mode;
+        if (mode === 'stretch') {
+          transform.setMode('scale');
+          transform.visible = false;
+          if (selected) {
+            createStretchHandles();
+            initialScale.copy(selected.scale);
+            initialPosition.copy(selected.position);
+          }
+          showNotification('Modo Estirar: arrastra los manejadores para estirar en cualquier dirección');
+        } else {
+          transform.setMode(mode);
+          transform.visible = true;
+          handleGroup.clear();
+          if (selected) {
+            transform.attach(selected);
+          }
+        }
         document.getElementById('mode').value = mode;
         updateToolButtons(mode);
-        
-        if (mode === 'stretch') {
-          showNotification('Modo Estirar: escala en un solo eje');
-        }
       });
     });
 
-    // color change
     document.getElementById('color').addEventListener('input', (e)=>{
       if(selected && selected.material && selected.material.color){
         selected.material.color.set(e.target.value);
@@ -574,7 +750,6 @@
       }
     });
 
-    // Autotest
     async function runAutotest(){
       try{
         const before = objects.length;
@@ -594,43 +769,70 @@
     }
     document.getElementById('autotest').addEventListener('click', runAutotest);
 
-    // responsiveness
     window.addEventListener('resize', ()=>{
       camera.aspect = container.clientWidth / container.clientHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(container.clientWidth, container.clientHeight);
     });
 
-    // keyboard shortcuts
     window.addEventListener('keydown', (e)=>{
-      // Atajos numéricos para herramientas
       if(e.key === '1' || e.key === 'g'){ 
         e.preventDefault();
-        transform.setMode('translate'); 
-        document.getElementById('mode').value = 'translate';
-        updateToolButtons('translate');
+        const mode = 'translate';
+        if (currentMode !== mode) {
+          currentMode = mode;
+          transform.setMode(mode);
+          document.getElementById('mode').value = mode;
+          updateToolButtons(mode);
+          handleGroup.clear();
+          transform.visible = true;
+          if (selected) transform.attach(selected);
+        }
       }
       if(e.key === '2' || e.key === 'r'){ 
         e.preventDefault();
-        transform.setMode('rotate'); 
-        document.getElementById('mode').value = 'rotate';
-        updateToolButtons('rotate');
+        const mode = 'rotate';
+        if (currentMode !== mode) {
+          currentMode = mode;
+          transform.setMode(mode);
+          document.getElementById('mode').value = mode;
+          updateToolButtons(mode);
+          handleGroup.clear();
+          transform.visible = true;
+          if (selected) transform.attach(selected);
+        }
       }
       if(e.key === '3' || e.key === 's'){ 
         e.preventDefault();
-        transform.setMode('scale'); 
-        document.getElementById('mode').value = 'scale';
-        updateToolButtons('scale');
+        const mode = 'scale';
+        if (currentMode !== mode) {
+          currentMode = mode;
+          transform.setMode(mode);
+          document.getElementById('mode').value = mode;
+          updateToolButtons(mode);
+          handleGroup.clear();
+          transform.visible = true;
+          if (selected) transform.attach(selected);
+        }
       }
       if(e.key === '4' || e.key === 'e'){ 
         e.preventDefault();
-        transform.setMode('scale');
-        document.getElementById('mode').value = 'stretch';
-        updateToolButtons('stretch');
-        showNotification('Modo Estirar activado (usa escala en un solo eje)');
+        const mode = 'stretch';
+        if (currentMode !== mode) {
+          currentMode = mode;
+          transform.setMode('scale');
+          document.getElementById('mode').value = mode;
+          updateToolButtons(mode);
+          transform.visible = false;
+          if (selected) {
+            createStretchHandles();
+            initialScale.copy(selected.scale);
+            initialPosition.copy(selected.position);
+          }
+          showNotification('Modo Estirar: arrastra los manejadores para estirar en cualquier dirección');
+        }
       }
       
-      // Historial
       if(e.ctrlKey && e.key.toLowerCase() === 'z'){ 
         e.preventDefault(); 
         undo();
@@ -640,29 +842,22 @@
         redo();
       }
       
-      // Otros atajos
       if(e.key === 'Delete'){ if(selected){ document.getElementById('delete').click(); }}
       if(e.ctrlKey && e.key.toLowerCase() === 'd'){ e.preventDefault(); document.getElementById('duplicate').click(); }
     });
 
-    // animation loop
     function animate(){
       requestAnimationFrame(animate);
       orbit.update();
       renderer.render(scene, camera);
     }
     
-    // Inicialización
     animate();
 
-    // initial sample object
     addPrimitive('cube');
     addPrimitive('sphere');
     updateStats();
-    // Guardar estado inicial en el historial
     saveToHistory('initial');
-
-    // Tips: To extend this program: implement UVs & materials export, import OBJ parsing, save presets, vertex editing tools.
   </script>
 </body>
 </html>
